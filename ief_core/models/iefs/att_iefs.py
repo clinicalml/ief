@@ -33,7 +33,8 @@ class AttentionIEFTransition(nn.Module):
                        otype = 'linear', 
                        alpha1_type = 'linear', 
                        add_stochastic = False, 
-                       num_heads = 1):
+                       num_heads = 1, 
+                       zmatrix=None):
         super(AttentionIEFTransition, self).__init__()
         self.response_only    = response_only
         if dim_input == -1: 
@@ -44,8 +45,20 @@ class AttentionIEFTransition(nn.Module):
         self.dim_subtype      = dim_subtype
         self.dim_input        = dim_input
         self.dim_treat        = dim_treat
+        self.zmatrix          = zmatrix
         if not self.response_only:
-            self.linear_layer = nn.Parameter(torch.eye(dim_stochastic))#nn.Linear(dim_stochastic, dim_stochastic) # take this out
+            if self.zmatrix == 'identity': 
+                self.linear_layer = nn.Parameter(torch.eye(dim_stochastic))#nn.Linear(dim_stochastic, dim_stochastic)
+            elif self.zmatrix == 'zeros':
+                self.linear_layer = nn.Parameter(torch.eye(dim_stochastic)*0.)#nn.Linear(dim_stochastic, dim_stochastic)
+            elif self.zmatrix == 'partial': 
+                # three dimensions to 0 
+                I = torch.zeros(dim_stochastic,dim_stochastic)
+                I[0,0] = 1.; I[1,1] = 1.; I[2,2] = 1.
+                self.linear_layer = nn.Parameter(I)
+            else: 
+                raise ValueError('misspecified z-matrix')
+            
             if otype == 'linear': 
                 self.out_layer    = nn.Linear(dim_stochastic, dim_output) 
             elif otype == 'nl': 
@@ -75,6 +88,7 @@ class AttentionIEFTransition(nn.Module):
         # out_linears= [torch.tanh(l(con))[...,None] for l in self.control_layers]
         # out_te     = [t(inp,con,eps=eps)[...,None] for t in self.treatment_exps]
         out_linear = inp*torch.tanh(self.control_layer(con))
+#         out_linear = torch.tanh(self.control_layer(con))
         out_te     = self.treatment_exp(inp, con, eps=eps)
         out_logcell= self.logcell(inp, con)
         # f   = tuple(out_linears + [out_te, out_logcell])

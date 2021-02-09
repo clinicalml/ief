@@ -1,4 +1,4 @@
-import torch
+import torch, os
 import torch.nn as nn
 import numpy as np
 import logging
@@ -7,12 +7,14 @@ import sys
 from lifelines.utils import concordance_index
 from sklearn.metrics import r2_score
 from pytorch_lightning.metrics.functional import f1_score, precision_recall, auroc
-from pytorch_lightning.metrics.sklearns import F1, Precision, Recall
+#from pytorch_lightning.metrics.sklearns import F1, Precision, Recall
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from torchcontrib.optim import SWA
-sys.path.append('../data/ml_mmrf')
-sys.path.append('../data/')
-from ml_mmrf.ml_mmrf_v1.data import load_mmrf
+fpath= os.path.dirname(os.path.realpath(__file__))
+sys.path.append(os.path.join(fpath,'../../data/ml_mmrf'))
+sys.path.append(os.path.join(fpath,'../../data/'))
+print (sys.path)
+from ml_mmrf.data import load_mmrf
 from synthetic.synthetic_data import load_synthetic_data_trt, load_synthetic_data_noisy
 from semi_synthetic.ss_data import *
 from models.utils import *
@@ -29,8 +31,8 @@ class Model(pl.LightningModule):
         self.trial = trial
         self.bs = trial.suggest_categorical('bs', [600,1500])
         self.lr = 1e-3
-        self.C  = trial.suggest_categorical('C', [.01,.1,1])
-        self.reg_all  = trial.suggest_categorical('reg_all', [True, False])
+        self.C  = trial.suggest_categorical('C', [.001,.01,.1,1,10])
+        self.reg_all  = trial.suggest_categorical('reg_all', ['all', 'except_multi_head', 'except_multi_head_ief'])
         self.reg_type = trial.suggest_categorical('reg_type', ['l1', 'l2'])
     
     def forward(self,**kwargs):
@@ -161,14 +163,24 @@ class Model(pl.LightningModule):
 #                               add_syn_marker=True, \
 #                               window='first_second', \
 #                               data_aug=True)
+            
+            data_dir = self.hparams['data_dir']
+            if self.hparams['data_dir'] == 'cluster':
+                data_dir = os.path.join(os.environ['PT_DATA_DIR'],'ml_mmrf','ml_mmrf','output','cleaned_mm_fold_2mos.pkl')
+            elif self.hparams['data_dir'] == 'cluster_comb3':
+                data_dir = os.path.join(os.environ['PT_DATA_DIR'],'ml_mmrf','ml_mmrf','output','cleaned_mm_fold_2mos_comb3.pkl')
+            elif self.hparams['data_dir'] == 'cluster_comb4':
+                data_dir = os.path.join(os.environ['PT_DATA_DIR'],'ml_mmrf','ml_mmrf','output','cleaned_mm_fold_2mos_comb4.pkl')
             ddata = load_mmrf(fold_span = [fold], \
+                              data_dir  = data_dir, \
                               digitize_K = 20, \
                               digitize_method = 'uniform', \
-                              suffix='_2mos', \
                               restrict_markers=[], \
                               add_syn_marker=False, \
                               window='all', \
-                              data_aug=True)
+                              data_aug=False, \
+                              ablation=True, \
+                              feats=[self.hparams['include_baseline'], self.hparams['include_treatment']])
 
         elif self.hparams['dataset'] == 'synthetic': 
             nsamples        = {'train':self.hparams['nsamples_syn'], 'valid':1000, 'test':200}
@@ -244,7 +256,6 @@ class Model(pl.LightningModule):
         data_loader = DataLoader(data, batch_size=batch_size, shuffle=False)
         return data, data_loader
 
-    @pl.data_loader
     def train_dataloader(self):
         if self.hparams['dataset'] == 'mm' or self.hparams['dataset'] == 'synthetic':
             _, train_loader = self.load_helper(tvt='train', att_mask=self.hparams['att_mask'])
@@ -252,7 +263,6 @@ class Model(pl.LightningModule):
             _, train_loader = load_ss_helper(self.ddata, tvt='train', bs=self.bs)
         return train_loader
 
-    @pl.data_loader
     def val_dataloader(self):
         if self.hparams['dataset'] == 'mm' or self.hparams['dataset'] == 'synthetic':
             _, valid_loader = self.load_helper(tvt='valid', att_mask=self.hparams['att_mask'])

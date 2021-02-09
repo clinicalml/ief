@@ -1,5 +1,6 @@
 import pytorch_lightning as pl
 import sys
+sys.path.append('./models')
 import os
 import optuna 
 from optuna.integration import PyTorchLightningPruningCallback
@@ -16,6 +17,7 @@ from models.rnn import GRU
 from models.sfomm import SFOMM
 from distutils.util import strtobool
 
+
 '''
 Name: main_trainer.py 
 Purpose: High-level training script 
@@ -30,7 +32,7 @@ class MetricsCallback(Callback):
         self.metrics = []
 
     def on_validation_end(self, trainer, pl_module):
-        self.metrics.append(trainer.callback_metrics)
+        self.metrics.append(trainer.callback_metrics['val_loss'].item())
 
 def objective(trial, args): 
     dict_args = vars(args)
@@ -54,16 +56,23 @@ def objective(trial, args):
         model = SDMM(trial, **dict_args)
 
     metrics_callback = MetricsCallback()
+    if args.ckpt_path != 'none': 
+#         checkpoint_callback = ModelCheckpoint(filepath=args.ckpt_path + str(args.fold) + str(args.dim_stochastic) + '_' + args.ttype + '_' + args.include_baseline + args.include_treatment + args.zmatrix + '_ssm_baseablation{epoch:05d}-{val_loss:.2f}')
+        checkpoint_callback = ModelCheckpoint(filepath=args.ckpt_path + str(args.nsamples_syn) + str(args.fold) + str(args.dim_stochastic) + '_' + args.ttype + '_{epoch:05d}-{val_loss:.2f}')
+    else: 
+        checkpoint_callback = False
     trainer = Trainer.from_argparse_args(args, 
         deterministic=True, 
         logger=False, 
         gpus=[args.gpu_id], 
-        checkpoint_callback=False, 
+        checkpoint_callback=checkpoint_callback, 
         callbacks=[metrics_callback], 
-        early_stop_callback=PyTorchLightningPruningCallback(trial, monitor='val_loss')
+#         early_stop_callback=PyTorchLightningPruningCallback(trial, monitor='val_loss')
+        early_stop_callback=False,
+        progress_bar_refresh_rate=1
     )
     trainer.fit(model)
-    return min([x['val_loss'].item() for x in metrics_callback.metrics])
+    return min([x for x in metrics_callback.metrics])
 
 if __name__ == '__main__':
     parser = ArgumentParser()
@@ -87,8 +96,14 @@ if __name__ == '__main__':
     parser.add_argument('--bs', default=600, type=int, help='batch size')
     parser.add_argument('--fold', default=1, type=int)
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--optuna', type=strtobool, default=True, help='whether to use optuna for optimization')
+    parser.add_argument('--optuna', type=strtobool, default=False, help='whether to use optuna for optimization')
     parser.add_argument('--num_optuna_trials', default=100, type=int)
+    parser.add_argument('--include_baseline', type=str, default='all')
+    parser.add_argument('--include_treatment', type=str, default='lines')
+    parser.add_argument('--ckpt_path', type=str, default='none')
+    parser.add_argument('--cluster_run', type=strtobool, default=True)
+    parser.add_argument('--data_dir', type=str, \
+            default='/afs/csail.mit.edu/u/z/zeshanmh/research/ief/data/ml_mmrf/ml_mmrf/output/cleaned_mm_fold_2mos.pkl')
 
     # THIS LINE IS KEY TO PULL THE MODEL NAME
     temp_args, _ = parser.parse_known_args()
@@ -138,3 +153,7 @@ if __name__ == '__main__':
             fi.write(f'\t\tValue: {trial.value}\n')
             for k,v in trial.params.items(): 
                 fi.write(f'\t\t{k}: {v}\n')
+    else: 
+        trial = optuna.trial.FixedTrial({'bs': args.bs, 'lr': args.lr, 'C': args.C, 'reg_all': args.reg_all, 'reg_type': args.reg_type, 'dim_stochastic': args.dim_stochastic})    
+        best_nelbo = objective(trial, args)
+        print(f'BEST_NELBO: {best_nelbo}')
